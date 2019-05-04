@@ -10,10 +10,25 @@ import numpy as np
 pad = "<pad>"
 start_token = "<s>"
 end_token = "</s>"
+
+#一系列超参数
+lr = 0.001
+batch_size = 128
+epochs = 60
+source_embedding_size = 15
+target_embedding_size = 15
+source_vocab_size = len(source_list)
+target_vocab_size = len(target_list)
+#encoder rnn和decoder rnn 的cell size和num_units必须保持一致
+rnn_cell_size = 2
+rnn_num_units = 128
+start_token_id = target_token_2_id[start_token]
+end_token_id = target_token_2_id[end_token]
+
 #定义encoder的输入tensor，加入了词嵌入
-def input_tensor(source_time_step,target_time_step,source_vocab_size,source_embedding_size,target_vocab_size,target_embedding_size):
+def input_tensor():
     #这里设置位None，意思是不指定batch_size用到多少就是多少
-    source_batch = tf.placeholder(tf.int32,[None,source_time_step],name="source_batch")
+    source_batch = tf.placeholder(tf.int32,[None,source_max_len],name="source_batch")
     #对source做词嵌入，词向量矩阵的shape为[source的词库大小,嵌入维度]
     #嵌入矩阵中每一行就是一个词向量
     source_embedding = tf.get_variable(shape=[source_vocab_size,source_embedding_size],name='source_embedding')
@@ -21,8 +36,8 @@ def input_tensor(source_time_step,target_time_step,source_vocab_size,source_embe
     embedded_source_batch = tf.nn.embedding_lookup(source_embedding,source_batch)
     #最后返回的embedded_X.shape = [time_step,batch_size,embedding_size]
     #target类似
-    target_batch_x = tf.placeholder(tf.int32,[None,target_time_step])
-    target_batch_y = tf.placeholder(tf.int32,[None,target_time_step])
+    target_batch_x = tf.placeholder(tf.int32,[None,target_max_len])
+    target_batch_y = tf.placeholder(tf.int32,[None,target_max_len])
     target_embedding = tf.get_variable(shape=[target_vocab_size,source_embedding_size],name='target_embedding')
     embedded_target_batch_x = tf.nn.embedding_lookup(target_embedding,target_batch_x)
     source_batch_seq_len = tf.placeholder(tf.int32,[None],name="source_batch_seq_len")
@@ -30,12 +45,12 @@ def input_tensor(source_time_step,target_time_step,source_vocab_size,source_embe
     return embedded_source_batch,embedded_target_batch_x,source_batch,target_batch_x,target_batch_y,source_batch_seq_len,target_batch_seq_len,target_embedding
 
 #参照tensorflow/nmt的官方教程
-def build_encoder(embedded_source_batch,source_batch_seq_len,rnn_layer_size=2,rnn_num_units=128):
+def build_encoder(embedded_source_batch,source_batch_seq_len):
     #定义rnn cell的获取
     def get_rnn_cell():
         return tf.nn.rnn_cell.LSTMCell(num_units=rnn_num_units)
     #定义encoder的rnn_layer
-    rnn_layer = tf.nn.rnn_cell.MultiRNNCell([get_rnn_cell() for _ in range(rnn_layer_size)])
+    rnn_layer = tf.nn.rnn_cell.MultiRNNCell([get_rnn_cell() for _ in range(rnn_cell_size)])
     #将rnn沿时间序列展开
     #   encoder_outputs: [batch_size,max_time, num_units]
     #   encoder_state: cell个数*[batch_size, num_units]
@@ -52,15 +67,15 @@ decoder怎样使用source的信息或者说语义向量
 最简单的办法就是把样本最后一个序列节点的hidden state传递给decoder
 '''    
 
-def build_decoder(encoder_outputs, encoder_state,embedded_target_batch_x,target_batch_seq_len,target_embedding,start_token_id,end_token_id,rnn_layer_size=2,rnn_num_units=128):
+def build_decoder(encoder_outputs, encoder_state,embedded_target_batch_x,target_batch_seq_len,target_embedding):
     def get_rnn_cell():
         return tf.nn.rnn_cell.LSTMCell(num_units=rnn_num_units)
-    rnn_layer = tf.nn.rnn_cell.MultiRNNCell([get_rnn_cell() for _ in range(rnn_layer_size)])
+    rnn_layer = tf.nn.rnn_cell.MultiRNNCell([get_rnn_cell() for _ in range(rnn_cell_size)])
     #decoder：需要helper，rnn cell，helper被分离开可以使用不同的解码策略，比如预测时beam search，贪婪算法
     #这里projection_layer就是一个全连接层，encoder_state连接到encoder_embede后的向量维度不能和target词汇数量一致所以需要映射层
     #不知道为什么这里使用tensorflow.python.keras.layers.core.Dense一直报错
     #换成tf.layers.Dense后解决 但是我在另一份能够运行的seq2seq代码中发现使用上面的Dense并不会报错
-    projection_layer = tf.layers.Dense(units=target_dic_size,kernel_initializer = tf.truncated_normal_initializer(mean = 0.0, stddev=0.1))
+    projection_layer = tf.layers.Dense(units=target_vocab_size,kernel_initializer = tf.truncated_normal_initializer(mean = 0.0, stddev=0.1))
     #with tf.variable_scope("decode"):
         #训练用到的training helper
         #这里train helper
@@ -88,7 +103,7 @@ def build_decoder(encoder_outputs, encoder_state,embedded_target_batch_x,target_
     return decoder_output,rnn_layer,projection_layer
 
 #推理阶段，也就是预测阶段
-def inference(start_token_id,target_embedding,end_token_id,encoder_state,decoder_rnn_layer,decoder_projection_layer,target_max_len):
+def inference(target_embedding,encoder_state,decoder_rnn_layer,decoder_projection_layer):
     inuput_batch = tf.placeholder(dtype=tf.int32, shape=[1],name="input_batch")
     start_tokens = tf.tile(tf.constant(value=start_token_id, dtype=tf.int32,shape=[1]), multiples = inuput_batch, name="start_tokens_2")
     #start_tokens = tf.placeholder(dtype=tf.int32, shape=[None], name="start_tokens_2")
@@ -99,27 +114,14 @@ def inference(start_token_id,target_embedding,end_token_id,encoder_state,decoder
     predicting_decoder_output, _ ,_= tf.contrib.seq2seq.dynamic_decode(predicting_decoder,output_time_major=False,maximum_iterations=target_max_len)
     tf.identity(predicting_decoder_output.sample_id, name='predictions2')
     
-def seq2seq_model(embedded_source_batch,source_batch_seq_len,embedded_target_batch_x,target_batch_seq_len,target_embedding,encoder_rnn_layer_size=2,encoder_rnn_num_units=128,decoder_rnn_layer_size=2,decoder_rnn_num_units=128):
-    encoder_outputs, encoder_state = build_encoder(embedded_source_batch, source_batch_seq_len, encoder_rnn_layer_size, encoder_rnn_num_units)
-    decoder_output,rnn_layer,projection_layer = build_decoder(encoder_outputs, encoder_state, embedded_target_batch_x, target_batch_seq_len, target_embedding, decoder_rnn_layer_size, decoder_rnn_num_units)
-    inference(target_token_2_id[start_token], target_embedding, target_token_2_id[end_token], encoder_state, rnn_layer, projection_layer, target_max_len)
+def seq2seq_model(embedded_source_batch,source_batch_seq_len,embedded_target_batch_x,target_batch_seq_len,target_embedding):
+    encoder_outputs, encoder_state = build_encoder(embedded_source_batch, source_batch_seq_len)
+    decoder_output,rnn_layer,projection_layer = build_decoder(encoder_outputs, encoder_state, embedded_target_batch_x, target_batch_seq_len, target_embedding)
+    inference(target_embedding, encoder_state, rnn_layer, projection_layer)
     print("encoder_outputs:",encoder_outputs)
     print("encoder_state:",encoder_state)
     print("decoder_output:",decoder_output)
     return decoder_output
-
-#一系列超参数
-lr = 0.001
-batch_size = 128
-epochs = 60
-source_embedding_size = 15
-target_embedding_size = 15
-source_dic_size = len(source_list)
-target_dic_size = len(target_list)
-encoder_rnn_layer_size = 2
-encoder_rnn_num_units = 128
-decoder_rnn_layer_size = 2
-decoder_rnn_num_units = 128
 
 
 def build_graph():
@@ -127,9 +129,9 @@ def build_graph():
     train_graph = tf.Graph()
     with train_graph.as_default():
         #1.tensor声明
-        embedded_source_batch,embedded_target_batch_x,source_batch,target_batch_x,target_batch_y,source_batch_seq_len,target_batch_seq_len,target_embedding = input_tensor(source_max_len, target_max_len, source_dic_size, source_embedding_size, target_dic_size, target_embedding_size)
+        embedded_source_batch,embedded_target_batch_x,source_batch,target_batch_x,target_batch_y,source_batch_seq_len,target_batch_seq_len,target_embedding = input_tensor()
         #2.构造seq2seq产生的output tensor
-        decoder_output = seq2seq_model(embedded_source_batch, source_batch_seq_len, embedded_target_batch_x, target_batch_seq_len, target_embedding, encoder_rnn_layer_size, encoder_rnn_num_units, decoder_rnn_layer_size, decoder_rnn_num_units)
+        decoder_output = seq2seq_model(embedded_source_batch, source_batch_seq_len, embedded_target_batch_x, target_batch_seq_len,target_embedding)
         #1和2这个步骤必须在同一个graph下声明
         #对这2个decoder的输出获取不同的tensor并且取名字
         training_logits = tf.identity(decoder_output.rnn_output, 'logits')
@@ -156,7 +158,7 @@ def build_graph():
 def train():
     train_graph,loss,train_op,source_batch,target_batch_x,target_batch_y,source_batch_seq_len,target_batch_seq_len = build_graph()
     #训练步骤
-    checkpoint = "./my_seq2seq_model.ckpt"
+    checkpoint = "./seq2seq_model.ckpt"
     with tf.Session(graph=train_graph) as sess:
         #tensor初始化
         sess.run(tf.global_variables_initializer())
@@ -175,4 +177,4 @@ def train():
         saver = tf.train.Saver()
         saver.save(sess, checkpoint)
 if __name__ == "__main__":
-    train()      
+    train()
