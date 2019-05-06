@@ -16,6 +16,9 @@
 
 ## 关于使用
 数据的source是一个字母序列。target是一个将字母倒序的序列。  
-涉及到加载数据路径在dataPreprocessing的make_source_target_list方法  
 自定义包的导入可能需要修改。 
+
+## 训练和预测
+训练直接在Seq2SeqModel.py中运行  
+预测在TestModel中运行
 
